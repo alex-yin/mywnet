@@ -321,6 +321,38 @@ def gaussian_neighbor(image_shape, sigma_X = 4, r = 5):
     vals = np.hstack(val_lst).astype(np.float)
     return indeces, vals
 
+def annotation_weight(annotation, neighbor_filter, sigma_I = 0.05):
+    """
+    Calculate likelihood of pixels in image by their metric in brightness.
+
+    Args:
+        annotation: tensor [B, H, W]
+        neighbor_filter: is tensor list: [rows, cols, vals].
+                        where rows, and cols are pixel in image,
+                        val is their likelihood in distance.
+        sigma_I: sigma for metric of intensity.
+    returns:
+        SparseTensor properties:\
+            indeces: [N, ndims]
+            annotation_weight: [N, batch_size]
+            dense_shape
+    """
+
+    indeces, vals, dense_shape = neighbor_filter
+    rows = indeces[:,0]
+    cols = indeces[:,1]
+    image_shape = annotation.get_shape()
+    weight_size = image_shape[1].value * image_shape[2].value
+
+    annotation = tf.reshape(annotation, shape=(-1, weight_size)) # [B, W*H]
+    annotation = tf.transpose(annotation, [1,0]) # [W*H,B]
+
+    Fi = tf.transpose(tf.nn.embedding_lookup(annotation, rows),[1,0]) # [B, #elements]
+    Fj = tf.transpose(tf.nn.embedding_lookup(annotation, cols),[1,0]) # [B, #elements]
+    annotation_weight = tf.exp(-(Fi - Fj)**2 / sigma_I**2) * vals
+    annotation_weight = tf.transpose(annotation_weight, [1,0]) # [#elements, B]
+
+    return indeces, annotation_weight, dense_shape
 
 def brightness_weight(image, neighbor_filter, sigma_I = 0.05):
     """

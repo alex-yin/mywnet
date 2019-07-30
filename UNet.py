@@ -8,7 +8,7 @@ from glob import glob
 import imageio
 import scipy.misc as misc
 import matplotlib.pyplot as plt
-sys.path.append(os.path.realpath('./src/data_io'))
+# sys.path.append(os.path.realpath('./src/data_io'))
 
 import TensorflowUtils as utils
 from data_io.BatchDatsetReader_VOC import create_BatchDatset
@@ -24,12 +24,12 @@ def tf_flags():
     tf.flags.DEFINE_integer('num_layers', "10", "number of layers of UNet")
     tf.flags.DEFINE_string("cmap", "viridis", "color map for segmentation")
     tf.flags.DEFINE_string("logs_dir", "UNet_VOC_logs/", "path to logs directory")
-    tf.flags.DEFINE_string("test_dir", "data/test/", "path of test image")
     tf.flags.DEFINE_float("learning_rate", "0.003", "Learning rate for Adam Optimizer")
     tf.flags.DEFINE_float("decay_rate", "0.5", "Learning rate for Adam Optimizer")
     tf.flags.DEFINE_float("dropout_rate", "0.65", "dropout rate")
     tf.flags.DEFINE_bool('debug', "False", "Debug mode: True/ False")
     tf.flags.DEFINE_string('mode', "train", "Mode train/ test/ visualize")
+    tf.flags.DEFINE_bool('depthwise_separable', "True", "Use depthwise separable conv: True/ False")
     return FLAGS
 
 
@@ -132,7 +132,7 @@ class Unet:
                 self.saver.save(self.sess, os.path.join(self.flags.logs_dir, "model.ckpt"), itr)
         return
 
-    def visaulize_pred(self, dataset_reader):
+    def visualize_pred(self, dataset_reader):
         """
         Predict segmentation of images random selected from dataset_reader.
         """
@@ -149,9 +149,9 @@ class Unet:
                                 0, self.flags.num_class, self.flags.cmap)[:,:,:,:3]
 
         for itr in range(self.flags.batch_size):
-            utils.save_image(valid_images[itr].astype(np.uint8), self.flags.logs_dir, name="inp_" + str(5+itr),mean=1)
-            utils.save_image(valid_annotations[itr].astype(np.uint8), self.flags.logs_dir, name="gt_" + str(5+itr),mean=1)
-            utils.save_image(pred[itr].astype(np.uint8), self.flags.logs_dir, name="pred_" + str(5+itr),mean=1)
+            utils.save_image(valid_images[itr].astype(np.uint8), self.flags.logs_dir, name="inp_" + str(itr))
+            utils.save_image(valid_annotations[itr].astype(np.uint8), self.flags.logs_dir, name="gt_" + str(itr))
+            utils.save_image(pred[itr].astype(np.uint8), self.flags.logs_dir, name="pred_" + str(itr))
             print("Saved image: %d" % itr)
 
         return valid_images, pred
@@ -162,30 +162,27 @@ class Unet:
         pred = np.squeeze(pred, axis=3)
         return pred
 
-    def plot_segmentation_under_test_dir(self):
+    def plot_segmentation_on_test(self, test_dataset_reader):
 
-        image_pattern = os.path.join(self.flags.test_dir, '*')
-        image_lst = glob(image_pattern)
-        print('hello',image_pattern)
-        print('hello',image_lst)
-        data = []
-        if not image_lst:
-            print('No files found')
+        if not test_dataset_reader:
+            print('No test data found')
         else:
-            test_images = np.stack([
-                    misc.imresize(imageio.imread(file),
-                    [self.flags.image_size, self.flags.image_size],
-                    interp='bilinear')
-                for file in image_lst])
+            test_images = test_dataset_reader.images
+            test_gts = test_dataset_reader.annotations
             test_preds = self.predict_segmentation(test_images)
             colorized_test_preds = utils.batch_colorize_ndarray(test_preds,
                                     0, self.flags.num_class, self.flags.cmap)[:,:,:,:3]
-            for i, (imag, pred) in enumerate(zip(test_images, colorized_test_preds)):
-                fig, axes = plt.subplots(1,2)
+            for i, (imag, pred, gt) in enumerate(zip(test_images, colorized_test_preds, test_gts)):
+                fig, axes = plt.subplots(1,3)
                 axes[0].imshow(imag)
                 axes[1].imshow(pred)
+                axes[2].imshow(gts)
                 axes[0].axis('off')
                 axes[1].axis('off')
+                axes[2].axis('off')
+                axes[0].set_title('IMG')
+                axes[1].set_title('PRED')
+                axes[2].set_title('GT')
                 filename = os.path.join(self.flags.logs_dir, 'Figure_%d.png'%i)
                 plt.savefig(filename, dpi=300, format="png", transparent=False)
             # plt.show()
@@ -353,13 +350,14 @@ if __name__ == '__main__':
     net = Unet(flags)
 
     print("Setting up dataset reader")
-    train_dataset_reader, validation_dataset_reader = create_BatchDatset()
+    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset()
 
-    if flags.mode == "train":
+    if "train" in flags.mode:
         net.train_net(train_dataset_reader, validation_dataset_reader)
 
-    elif flags.mode == "visualize":
-        valid_images, preds = net.visaulize_pred(validation_dataset_reader)
+    elif "visualize" in flags.mode:
+        valid_images, preds = net.visualize_pred(validation_dataset_reader)
 
-    elif flags.mode == "test":
-        test_images, test_preds = net.plot_segmentation_under_test_dir()
+    elif "test" in flags.mode:
+        test_images, preds = net.plot_segmentation_on_test(test_dataset_reader)
+

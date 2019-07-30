@@ -4,7 +4,8 @@ from tensorflow.contrib import slim
 import numpy as np
 import datetime
 import sys, os
-sys.path.append(os.path.realpath('./src/data_io'))
+# sys.path.append(os.path.realpath('./src/data_io'))
+
 import TensorflowUtils as utils
 from data_io.BatchDatsetReader_VOC import create_BatchDatset
 from UNet import Unet
@@ -20,13 +21,13 @@ def tf_flags():
     tf.flags.DEFINE_integer('num_layers', "5", "number of layers of UNet")
     tf.flags.DEFINE_string("cmap", "viridis", "color map for segmentation")
     tf.flags.DEFINE_string("logs_dir", "WNet_naive_VOC_logs/", "path to logs directory")
-    tf.flags.DEFINE_string("test_dir", "data/test/", "path of test image")
     tf.flags.DEFINE_float("learning_rate", "5e-5", "Learning rate for Adam Optimizer")
     tf.flags.DEFINE_float("decay_rate", "0.5", "Decay rate of learning_rate")
     tf.flags.DEFINE_float("dropout_rate", "0.65", "dropout rate")
     tf.flags.DEFINE_bool('debug', "False", "Debug mode: True/ False")
     tf.flags.DEFINE_string('mode', "train", "Mode train/ test/ visualize")
     tf.flags.DEFINE_integer('freq', "100", "freq save 10 100 500 ")
+    tf.flags.DEFINE_bool('depthwise_separable', "True", "Use depthwise separable conv: True/ False")
     return FLAGS
 
 class Wnet_naive(Unet):
@@ -78,8 +79,6 @@ class Wnet_naive(Unet):
         return
 
     def train_net(self, train_dataset_reader, validation_dataset_reader):
-        # add loss list
-        tab_loss=[]
         lr = self.sess.run(self.learning_rate)
         for itr in range(self.flags.max_iteration):
 
@@ -94,7 +93,6 @@ class Wnet_naive(Unet):
 
             if itr % self.flags.freq == 0:
                 train_loss, summary_str = self.sess.run([self.loss, self.loss_summary], feed_dict=feed_dict)
-                tab_loss.append(train_loss)
                 print("Step: %d, Train_loss:%g" % (itr, train_loss))
                 self.train_writer.add_summary(summary_str, itr)
 
@@ -109,14 +107,9 @@ class Wnet_naive(Unet):
                 self.validation_writer.add_summary(summary_sva, itr)
                 self.saver.save(self.sess, os.path.join(self.flags.logs_dir, "model.ckpt"), itr)
 
-        #save the 2 tab
-        with open(self.flags.logs_dir +"/result.csv", "w") as output:
-            writer = csv.writer(output, lineterminator='\n')
-            for val in tab_loss:
-                writer.writerow([val])
         return
 
-    def visaulize_pred(self, dataset_reader):
+    def visualize_pred(self, dataset_reader):
         """
         Predict segmentation of images random selected from dataset_reader.
         """
@@ -129,9 +122,9 @@ class Wnet_naive(Unet):
 
         for itr in range(self.flags.batch_size):
             print('itr',itr)
-            utils.save_image(valid_images[itr].astype(np.uint8), self.flags.logs_dir, name="inp_" + str(5+itr))#,mean=1)
-            utils.save_image(reconst_image[itr].astype(np.uint8), self.flags.logs_dir, name="gt_" + str(5+itr))#,mean=1)
-            utils.save_image(pred[itr].astype(np.uint8), self.flags.logs_dir, name="pred_" + str(5+itr))#,mean=1)
+            utils.save_image(valid_images[itr].astype(np.uint8), self.flags.logs_dir, name="inp_" + str(itr))
+            utils.save_image(reconst_image[itr].astype(np.uint8), self.flags.logs_dir, name="recon_" + str(itr))
+            utils.save_image(pred[itr].astype(np.uint8), self.flags.logs_dir, name="pred_" + str(itr))
             print("Saved image: %d" % itr)
 
         return valid_images, pred
@@ -181,15 +174,15 @@ if __name__ == '__main__':
     flags = tf_flags()
     net = Wnet_naive(flags)
 
-    if flags.mode == "test":
-        test_images, preds = net.plot_segmentation_under_test_dir()
+    print("Setting up dataset reader")
+    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset()
 
-    else:
-        print("Setting up dataset reader")
-        train_dataset_reader, validation_dataset_reader = create_BatchDatset()
+    if "train" in flags.mode:
+        net.train_net(train_dataset_reader, validation_dataset_reader)
 
-        if flags.mode == "train":
-            net.train_net(train_dataset_reader, validation_dataset_reader)
+    elif "visualize" in flags.mode:
+        valid_images, preds = net.visualize_pred(validation_dataset_reader)
 
-        elif flags.mode == "visualize":
-            valid_images, preds = net.visaulize_pred(validation_dataset_reader)
+    elif "test" in flags.mode:
+        test_images, preds = net.plot_segmentation_on_test(test_dataset_reader)
+

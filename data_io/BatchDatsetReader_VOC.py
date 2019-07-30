@@ -28,26 +28,23 @@ def create_image_lists(image_dir):
     image_lst = glob(image_pattern)
     image_lst = [item.replace('\\','/') for item in image_lst]
     data = []
-    qwerty = 0
     if not image_lst:
         print('No files found')
     else:
         for image_file in image_lst:
             filename = image_file.split("/")[-1].split('.')[0]
-            annotation_file = os.path.join(image_dir+ '/SegmentationClass/'+ filename + '.jpg')
+            annotation_file = os.path.join(image_dir, 'SegmentationClass', filename + '.jpg')
             if os.path.exists(annotation_file):
                 record = {'image': image_file, 'annotation': annotation_file, 'filename': filename}
                 data.append(record)
             else:
                 print('Annotation file not found for %s - Skipping' % filename)
                 print('Pattern %s' % annotation_file)
-                print(qwerty)
-                qwerty=qwerty+1
 
     print ('Nunmber of files: %d' %len(data))
     return data
 
-def read_data_record(data_dir, validation_len = 500):
+def read_data_record(data_dir, validation_len = 500, test_len = 500):
     """
     Initialize list of datapath in data_dir if has not been initialized.
     """
@@ -56,9 +53,12 @@ def read_data_record(data_dir, validation_len = 500):
     if not os.path.exists(pickle_filepath):
         data = create_image_lists(data_dir)
         # Parse data into training and validation
-        training_data = data[validation_len:]
+        training_data = data[(validation_len + test_len):]
         validation_data = data[:validation_len]
-        result = {'training':training_data, 'validation':validation_data}
+        test_data = data[validation_len:(validation_len + test_len)]
+        result = {'training':training_data,
+                  'validation':validation_data,
+                  'test':test_data}
 
         print ('Pickling ...')
         with open(pickle_filepath, 'wb') as f:
@@ -72,10 +72,11 @@ def read_data_record(data_dir, validation_len = 500):
 
 def create_BatchDatset():
     print(" create BatchDatset")
-    data_record = read_data_record('./data/soccer')
+    data_record = read_data_record('./soccer')
     train_dataset = BatchDatset(data_record['training'], True)
     valid_dataset = BatchDatset(data_record['validation'], False)
-    return train_dataset, valid_dataset
+    test_dataset = BatchDatset(data_record['test'], False)
+    return train_dataset, valid_dataset, test_dataset
 
 class BatchDatset:
 

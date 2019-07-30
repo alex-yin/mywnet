@@ -7,7 +7,7 @@ import sys, os
 
 import TensorflowUtils as utils
 from WNet_naive import Wnet_naive
-from soft_ncut import soft_ncut, brightness_weight, gaussian_neighbor, convert_to_batchTensor
+from soft_ncut import soft_ncut, brightness_weight, gaussian_neighbor, convert_to_batchTensor, annotation_weight
 from data_io.BatchDatsetReader_VOC import create_BatchDatset
 
 
@@ -16,7 +16,7 @@ def tf_flags():
     tf.flags.DEFINE_integer("batch_size", "5", "batch size for training")
     tf.flags.DEFINE_integer("image_size", "96", "batch size for training")
     tf.flags.DEFINE_integer('max_iteration', "50000", "max iterations")
-    tf.flags.DEFINE_integer('decay_steps', "5000", "number of iterations learning rate decay")
+    tf.flags.DEFINE_integer('decay_steps', "5000", "number of iterations for learning rate decay")
     tf.flags.DEFINE_integer('num_class', "5", "number of classes for segmentation")
     tf.flags.DEFINE_integer('num_layers', "7", "number of layers of UNet")
     tf.flags.DEFINE_string("cmap", "viridis", "color map for segmentation")
@@ -29,7 +29,7 @@ def tf_flags():
     return FLAGS
 
 
-class Wnet_bright(Wnet_naive):
+class Wnet_guided(Wnet_naive):
 
     def __init__(self, flags):
         """
@@ -48,12 +48,14 @@ class Wnet_bright(Wnet_naive):
         # Place holder
         self.keep_probability = tf.placeholder(tf.float32, name="keep_probabilty")
         self.image = tf.placeholder(tf.float32, shape=[None, image_size, image_size, 3], name="input_image")
+        self.annotation = tf.placeholder(tf.int32, shape=[None, image_size, image_size], name="annotation")
         self.phase_train = tf.placeholder(tf.bool, name='phase_train')
         self.neighbor_indeces = tf.placeholder(tf.int64, name="neighbor_indeces")
         self.neighbor_vals = tf.placeholder(tf.float32, name="neighbor_vals")
         self.neighbor_shape = tf.placeholder(tf.int64, name="neighbor_shape")
         neighbor_filter = (self.neighbor_indeces, self.neighbor_vals, self.neighbor_shape)
-        _image_weights = brightness_weight(self.image, neighbor_filter, sigma_I = 0.05)
+        # _image_weights = brightness_weight(self.image, neighbor_filter, sigma_I = 0.05)
+        _image_weights = annotation_weight(self.annotation, neighbor_filter, sigma_I = 0.05)
         image_weights = convert_to_batchTensor(*_image_weights)
 
         # Prediction and loss
@@ -126,8 +128,9 @@ class Wnet_bright(Wnet_naive):
                 self.sess.run(tf.assign(self.reconst_learning_rate, reconst_lr))
                 self.sess.run(tf.assign(self.softNcut_learning_rate, softNcut_lr))
 
-            train_images, _ = train_dataset_reader.next_batch(self.flags.batch_size)
+            train_images, train_annotations = train_dataset_reader.next_batch(self.flags.batch_size)
             feed_dict = {self.image: train_images,
+                        self.annotation: train_annotations,
                         self.keep_probability: self.flags.dropout_rate,
                         self.phase_train: True,
                         self.neighbor_indeces: gauss_indeces,
@@ -163,7 +166,7 @@ if __name__ == '__main__':
     """
 
     flags = tf_flags()
-    net = Wnet_bright(flags)
+    net = Wnet_guided(flags)
 
     print("Setting up dataset reader")
     train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset()
