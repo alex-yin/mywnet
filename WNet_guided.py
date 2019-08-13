@@ -7,7 +7,7 @@ import sys, os
 
 import TensorflowUtils as utils
 from WNet_naive import Wnet_naive
-from soft_ncut import soft_ncut, brightness_weight, gaussian_neighbor, convert_to_batchTensor, annotation_weight
+from soft_ncut import soft_ncut, brightness_weight, gaussian_neighbor, convert_to_batchTensor, annotation_weight, guided_soft_ncut
 from data_io.BatchDatsetReader_VOC import create_BatchDatset
 
 
@@ -20,8 +20,8 @@ def tf_flags():
     tf.flags.DEFINE_integer('num_class', "5", "number of classes for segmentation")
     tf.flags.DEFINE_integer('num_layers', "7", "number of layers of UNet")
     tf.flags.DEFINE_string("cmap", "viridis", "color map for segmentation")
-    tf.flags.DEFINE_string("logs_dir", "WNet_bright_VOC_logs/", "path to logs directory")
-    tf.flags.DEFINE_float("learning_rate", "5e-5", "Learning rate for Adam Optimizer")
+    tf.flags.DEFINE_string("logs_dir", "WNet_guided_logs/", "path to logs directory")
+    tf.flags.DEFINE_float("learning_rate", "5e-4", "Learning rate for Adam Optimizer")
     tf.flags.DEFINE_float("decay_rate", "0.5", "Decay rate of learning_rate")
     tf.flags.DEFINE_float("dropout_rate", "0.65", "dropout rate")
     tf.flags.DEFINE_bool('debug', "False", "Debug mode: True/ False")
@@ -50,13 +50,13 @@ class Wnet_guided(Wnet_naive):
         self.image = tf.placeholder(tf.float32, shape=[None, image_size, image_size, 3], name="input_image")
         self.annotation = tf.placeholder(tf.int32, shape=[None, image_size, image_size], name="annotation")
         self.phase_train = tf.placeholder(tf.bool, name='phase_train')
-        self.neighbor_indeces = tf.placeholder(tf.int64, name="neighbor_indeces")
-        self.neighbor_vals = tf.placeholder(tf.float32, name="neighbor_vals")
-        self.neighbor_shape = tf.placeholder(tf.int64, name="neighbor_shape")
-        neighbor_filter = (self.neighbor_indeces, self.neighbor_vals, self.neighbor_shape)
+        # self.neighbor_indeces = tf.placeholder(tf.int64, name="neighbor_indeces")
+        # self.neighbor_vals = tf.placeholder(tf.float32, name="neighbor_vals")
+        # self.neighbor_shape = tf.placeholder(tf.int64, name="neighbor_shape")
+        # neighbor_filter = (self.neighbor_indeces, self.neighbor_vals, self.neighbor_shape)
         # _image_weights = brightness_weight(self.image, neighbor_filter, sigma_I = 0.05)
-        _image_weights = annotation_weight(self.annotation, neighbor_filter, sigma_I = 0.05)
-        image_weights = convert_to_batchTensor(*_image_weights)
+        # _image_weights = annotation_weight(self.annotation, neighbor_filter, sigma_I = 5)
+        # image_weights = convert_to_batchTensor(*_image_weights)
 
         # Prediction and loss
         self.pred_annotation, self.image_segment_logits, self.reconstruct_image = \
@@ -66,7 +66,9 @@ class Wnet_guided(Wnet_naive):
                                     self.pred_annotation, 0, num_class, self.flags.cmap)
         self.reconstruct_loss = tf.reduce_mean(tf.reshape(
                                     (self.image - self.reconstruct_image)**2, shape=[-1]))
-        batch_soft_ncut = soft_ncut(self.image, image_segment, image_weights)
+                                    # ((self.image - self.reconstruct_image) / 255)**2, shape=[-1]))
+        batch_soft_ncut = guided_soft_ncut(self.annotation, image_segment)
+        # batch_soft_ncut = soft_ncut(self.image, image_segment, image_weights)
         self.soft_ncut = tf.reduce_mean(batch_soft_ncut)
         self.loss = self.reconstruct_loss + self.soft_ncut
 
@@ -95,6 +97,9 @@ class Wnet_guided(Wnet_naive):
 
         # Session ,saver, and writer
         print("Setting up Session and Saver...")
+        # cfg = tf.ConfigProto(allow_soft_placement=True)
+        # cfg.gpu_options.allow_growth = True
+        # self.sess = tf.Session(config=cfg)
         self.sess = tf.Session()
         self.saver = tf.train.Saver(max_to_keep=2)
         # create two summary writers to show training loss and validation loss in the same graph
@@ -113,8 +118,8 @@ class Wnet_guided(Wnet_naive):
     def train_net(self, train_dataset_reader, validation_dataset_reader):
 
         image_shape = self.image.get_shape().as_list()[1:3]
-        gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
         weight_shapes = np.prod(image_shape).astype(np.int64)
+        # gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 20)
 
         # self.sess.run(tf.assign(self.reconst_learning_rate, self.flags.learning_rate))
         # self.sess.run(tf.assign(self.softNcut_learning_rate, self.flags.learning_rate))
@@ -132,21 +137,23 @@ class Wnet_guided(Wnet_naive):
             feed_dict = {self.image: train_images,
                         self.annotation: train_annotations,
                         self.keep_probability: self.flags.dropout_rate,
-                        self.phase_train: True,
-                        self.neighbor_indeces: gauss_indeces,
-                        self.neighbor_vals: gauss_vals,
-                        self.neighbor_shape: [weight_shapes, weight_shapes]}
+                        self.phase_train: True}
+                        # self.neighbor_indeces: gauss_indeces,
+                        # self.neighbor_vals: gauss_vals,
+                        # self.neighbor_shape: [weight_shapes, weight_shapes]}
             valid_feed_dict = dict(feed_dict)
 
             self.sess.run(self.train_reconst_op, feed_dict=feed_dict)
             self.sess.run(self.train_softNcut_op, feed_dict=feed_dict)
 
-            if itr % 100 == 0:
-                train_loss, summary_str = self.sess.run([self.loss, self.loss_summary], feed_dict=feed_dict)
+            if itr % 10 == 0:
+                train_loss = self.sess.run(self.loss, feed_dict=feed_dict)
                 print("Step: %d, Train_loss:%g" % (itr, train_loss))
+
+            if itr % 500 == 0:
+                summary_str = self.sess.run(self.loss_summary, feed_dict=feed_dict)
                 self.train_writer.add_summary(summary_str, itr)
 
-            if itr % 1000 == 0:
                 valid_images, _ = validation_dataset_reader.get_random_batch(self.flags.batch_size)
                 valid_feed_dict[self.image] = valid_images
                 valid_feed_dict[self.keep_probability] = 1.0
@@ -164,12 +171,13 @@ if __name__ == '__main__':
     """
     Init network and train.
     """
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
     flags = tf_flags()
     net = Wnet_guided(flags)
 
     print("Setting up dataset reader")
-    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset()
+    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset('./soccer')
 
     if "train" in flags.mode:
         net.train_net(train_dataset_reader, validation_dataset_reader)

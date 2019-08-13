@@ -44,7 +44,7 @@ def create_image_lists(image_dir):
     print ('Nunmber of files: %d' %len(data))
     return data
 
-def read_data_record(data_dir, validation_len = 500, test_len = 500):
+def read_data_record(data_dir, validation_len = 10, test_len = 500):
     """
     Initialize list of datapath in data_dir if has not been initialized.
     """
@@ -70,9 +70,9 @@ def read_data_record(data_dir, validation_len = 500, test_len = 500):
         data_records = pickle.load(f)
     return data_records
 
-def create_BatchDatset():
-    print(" create BatchDatset")
-    data_record = read_data_record('./soccer')
+def create_BatchDatset(data_dir):
+    print(" create BatchDatset from " + data_dir)
+    data_record = read_data_record(data_dir)
     train_dataset = BatchDatset(data_record['training'], True)
     valid_dataset = BatchDatset(data_record['validation'], False)
     test_dataset = BatchDatset(data_record['test'], False)

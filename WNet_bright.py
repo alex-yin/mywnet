@@ -30,7 +30,6 @@ def tf_flags():
 
 
 class Wnet_bright(Wnet_naive):
-
     def __init__(self, flags):
         """
         Initialize:
@@ -111,7 +110,7 @@ class Wnet_bright(Wnet_naive):
     def train_net(self, train_dataset_reader, validation_dataset_reader):
 
         image_shape = self.image.get_shape().as_list()[1:3]
-        gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
+        gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 10)
         weight_shapes = np.prod(image_shape).astype(np.int64)
 
         # self.sess.run(tf.assign(self.reconst_learning_rate, self.flags.learning_rate))
@@ -166,7 +165,7 @@ if __name__ == '__main__':
     net = Wnet_bright(flags)
 
     print("Setting up dataset reader")
-    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset()
+    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset('./soccer')
 
     if "train" in flags.mode:
         net.train_net(train_dataset_reader, validation_dataset_reader)

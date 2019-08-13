@@ -175,7 +175,7 @@ if __name__ == '__main__':
     net = Wnet_naive(flags)
 
     print("Setting up dataset reader")
-    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset()
+    train_dataset_reader, validation_dataset_reader, test_dataset_reader = create_BatchDatset('./soccer')
 
     if "train" in flags.mode:
         net.train_net(train_dataset_reader, validation_dataset_reader)

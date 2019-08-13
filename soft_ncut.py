@@ -321,7 +321,7 @@ def gaussian_neighbor(image_shape, sigma_X = 4, r = 5):
     vals = np.hstack(val_lst).astype(np.float)
     return indeces, vals
 
-def annotation_weight(annotation, neighbor_filter, sigma_I = 0.05):
+def annotation_weight(annotation, neighbor_filter, sigma_I = 5):
     """
     Calculate likelihood of pixels in image by their metric in brightness.
 
@@ -344,6 +344,7 @@ def annotation_weight(annotation, neighbor_filter, sigma_I = 0.05):
     image_shape = annotation.get_shape()
     weight_size = image_shape[1].value * image_shape[2].value
 
+    annotation = tf.cast(annotation, tf.float32)
     annotation = tf.reshape(annotation, shape=(-1, weight_size)) # [B, W*H]
     annotation = tf.transpose(annotation, [1,0]) # [W*H,B]
 
@@ -571,6 +572,23 @@ def soft_ncut(image, image_segment, image_weights):
 
     return soft_ncut
 
+def dense_annotation_weight(annotation, sigma_I = 10):
+    image_shape = annotation.get_shape()
+    weight_size = image_shape[1].value * image_shape[2].value
+    batch_size = image_shape[0]
+
+    annotation = tf.cast(annotation, tf.float32)
+    annotation = tf.reshape(annotation, shape=(-1, weight_size)) # [B, W*H]
+    annotation = tf.transpose(annotation, [1,0]) # [W*H,B]
+
+    j, i = tf.meshgrid(tf.range(weight_size), tf.range(weight_size)) # [H*W, H*W]
+    Fi = tf.gather_nd(annotation, tf.expand_dims(i, axis=-1)) # [H*W, H*W, B]
+    Fj = tf.gather_nd(annotation, tf.expand_dims(j, axis=-1)) # [H*W, H*W, B]
+    annotation_weight = tf.exp(-(Fi - Fj)**2 / sigma_I**2) # [H*W, H*W, B]
+    annotation_weight = tf.transpose(annotation_weight, [2, 0, 1]) # [B, H*W, H*W]
+
+    return annotation_weight
+
 def dense_brightness_weight(image, sigma_X = 4, sigma_I = 10, r = 5):
     """
     Calculate bright_weight(connection) for image
@@ -607,6 +625,49 @@ def dense_brightness_weight(image, sigma_X = 4, sigma_I = 10, r = 5):
         bright_weights[batch] = bright_weight
 
     return bright_weights
+
+def guided_soft_ncut(annotation, image_segment):
+    """
+    Args:
+        annotation: [B, H, W, C]
+        image_segment: [B, H, W, K]
+    Returns:
+        Soft_Ncut: scalar
+    """
+    batch_size = tf.shape(annotation)[0]
+    num_class = tf.shape(image_segment)[-1]
+    image_shape = annotation.get_shape()
+    weight_size = image_shape[1].value * image_shape[2].value
+    image_segment = tf.reshape(image_segment, tf.stack([batch_size, num_class, weight_size])) # [B, K, H*W]
+
+    image_weights = dense_annotation_weight(annotation) # [B, H*W, H*W]
+
+    # Dis-association
+    # [B, K, H*W] @ [B, H*W, H*W] batch matmul = [B, K, H*W]
+    W_Ak = tf.einsum('aij,ajk->aik', image_segment, image_weights) # [B, K, H*W]
+    # [B, K, H*W] @ [B, K, H*W] dot product on [[2],[2]]  = [B, K]
+    dis_assoc = tf.einsum('ijk,ijk->ij', W_Ak, image_segment) # [B, K]
+    dis_assoc = tf.identity(dis_assoc, name="dis_assoc")
+
+    # Association
+    # image_weights: [B, H*W, H*W] => sum_W: [B, H*W]
+    sum_W = tf.reduce_sum(image_weights, axis=2) # [B, H*W]
+    # [B, K, H*W] @ [B, H*W] => [B, K]
+    # TODO: turn this into einsum
+    assoc = tf.tensordot(image_segment, sum_W, axes=[2,1]) # [B0, K0, B1]
+    assoc = sycronize_axes(assoc, [0,2], tensor_dims=3) # [B0=B1, K0]
+    # somehow this cause runtime error:
+    # assoc = tf.einsum('ijk,ik->ij', image_segment, sum_W) # [B, K]
+    assoc = tf.identity(assoc, name="assoc")
+
+    utils.add_activation_summary(dis_assoc)
+    utils.add_activation_summary(assoc)
+
+    # Soft NCut
+    eps = 1e-6
+    soft_ncut = tf.cast(num_class, tf.float32) - \
+                tf.reduce_sum((dis_assoc + eps) / (assoc + eps), axis=1)
+    return soft_ncut
 
 def dense_soft_ncut(image, image_segment):
     """
