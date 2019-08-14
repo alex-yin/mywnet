@@ -556,9 +556,9 @@ def soft_ncut(image, image_segment, image_weights):
     dis_assoc = tf.identity(dis_assoc, name="dis_assoc")
 
     # Association
-    # image_segment: [B0, K0, H*W]
-    sum_W = tf.sparse_reduce_sum(image_weights,axis=2) # [B1, W*H]
-    assoc = tf.tensordot(image_segment, sum_W, axes=[2,1]) # [B0, K0, B1]
+    # image_segment: [B, K, H*W]
+    sum_W = tf.sparse_reduce_sum(image_weights,axis=2) # [B, W*H]
+    assoc = tf.tensordot(image_segment, sum_W, axes=[2,1]) # [B, K, B]
     assoc = sycronize_axes(assoc, [0,2], tensor_dims=3) # [B0=B1, K0]
     assoc = tf.identity(assoc, name="assoc")
 
@@ -634,10 +634,10 @@ def guided_soft_ncut(annotation, image_segment):
     Returns:
         Soft_Ncut: scalar
     """
-    batch_size = tf.shape(annotation)[0]
-    num_class = tf.shape(image_segment)[-1]
+    batch_size = tf.shape(annotation)[0] # B
+    num_class = image_segment.get_shape()[-1].value # K
     image_shape = annotation.get_shape()
-    weight_size = image_shape[1].value * image_shape[2].value
+    weight_size = image_shape[1].value * image_shape[2].value # H*W
     image_segment = tf.reshape(image_segment, tf.stack([batch_size, num_class, weight_size])) # [B, K, H*W]
 
     image_weights = dense_annotation_weight(annotation) # [B, H*W, H*W]
@@ -650,14 +650,10 @@ def guided_soft_ncut(annotation, image_segment):
     dis_assoc = tf.identity(dis_assoc, name="dis_assoc")
 
     # Association
-    # image_weights: [B, H*W, H*W] => sum_W: [B, H*W]
     sum_W = tf.reduce_sum(image_weights, axis=2) # [B, H*W]
-    # [B, K, H*W] @ [B, H*W] => [B, K]
-    # TODO: turn this into einsum
-    assoc = tf.tensordot(image_segment, sum_W, axes=[2,1]) # [B0, K0, B1]
-    assoc = sycronize_axes(assoc, [0,2], tensor_dims=3) # [B0=B1, K0]
-    # somehow this cause runtime error:
-    # assoc = tf.einsum('ijk,ik->ij', image_segment, sum_W) # [B, K]
+    # broadcast [B, H*W] => [B, K, H*W]
+    sum_W = tf.stack([sum_W] * num_class, axis=1)
+    assoc = tf.tensordot(image_segment, sum_W, axes=[2,2]) # [B, K]
     assoc = tf.identity(assoc, name="assoc")
 
     utils.add_activation_summary(dis_assoc)

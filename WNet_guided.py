@@ -18,10 +18,10 @@ def tf_flags():
     tf.flags.DEFINE_integer('max_iteration', "50000", "max iterations")
     tf.flags.DEFINE_integer('decay_steps', "5000", "number of iterations for learning rate decay")
     tf.flags.DEFINE_integer('num_class', "5", "number of classes for segmentation")
-    tf.flags.DEFINE_integer('num_layers', "7", "number of layers of UNet")
+    tf.flags.DEFINE_integer('num_layers', "5", "number of layers of UNet")
     tf.flags.DEFINE_string("cmap", "viridis", "color map for segmentation")
     tf.flags.DEFINE_string("logs_dir", "WNet_guided_logs/", "path to logs directory")
-    tf.flags.DEFINE_float("learning_rate", "5e-4", "Learning rate for Adam Optimizer")
+    tf.flags.DEFINE_float("learning_rate", "5e-5", "Learning rate for Adam Optimizer")
     tf.flags.DEFINE_float("decay_rate", "0.5", "Decay rate of learning_rate")
     tf.flags.DEFINE_float("dropout_rate", "0.65", "dropout rate")
     tf.flags.DEFINE_bool('debug', "False", "Debug mode: True/ False")
@@ -65,7 +65,7 @@ class Wnet_guided(Wnet_naive):
         self.colorized_pred_annotation = utils.batch_colorize(
                                     self.pred_annotation, 0, num_class, self.flags.cmap)
         self.reconstruct_loss = tf.reduce_mean(tf.reshape(
-                                    (self.image - self.reconstruct_image)**2, shape=[-1]))
+                                    ((self.image - self.reconstruct_image)/255)**2, shape=[-1]))
                                     # ((self.image - self.reconstruct_image) / 255)**2, shape=[-1]))
         batch_soft_ncut = guided_soft_ncut(self.annotation, image_segment)
         # batch_soft_ncut = soft_ncut(self.image, image_segment, image_weights)
