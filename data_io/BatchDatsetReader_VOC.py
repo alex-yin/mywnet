@@ -14,17 +14,20 @@ from six.moves import urllib
 import tarfile, zipfile
 
 
-def create_image_lists(image_dir):
+def create_image_lists(data_dir,
+                       image_dir='JPEGImages',
+                       annotation_dir='SegmentationClass',
+                       ftype='jpg'):
     """
-    Read 'image_dir/*/training' and 'image_dir/*/validation'
+    Read 'data_dir/image_dir/*.ftype' and 'data_dir/annotation_dir/*.ftype'
     into list of dict with keys: 'image', 'annotation', 'filename'
     """
-    if not gfile.Exists(image_dir):
-        print("Image directory '" + image_dir + "' not found.")
+    if not gfile.Exists(data_dir):
+        print("Image directory '" + data_dir + "' not found.")
         return None
 
     # Find image list if its common in annotation
-    image_pattern = os.path.join(image_dir, 'JPEGImages', '*.' + 'jpg')
+    image_pattern = os.path.join(data_dir, image_dir, '*.' + ftype)
     image_lst = glob(image_pattern)
     image_lst = [item.replace('\\','/') for item in image_lst]
     data = []
@@ -33,7 +36,7 @@ def create_image_lists(image_dir):
     else:
         for image_file in image_lst:
             filename = image_file.split("/")[-1].split('.')[0]
-            annotation_file = os.path.join(image_dir, 'SegmentationClass', filename + '.jpg')
+            annotation_file = os.path.join(data_dir, annotation_dir, filename + '.' + ftype)
             if os.path.exists(annotation_file):
                 record = {'image': image_file, 'annotation': annotation_file, 'filename': filename}
                 data.append(record)

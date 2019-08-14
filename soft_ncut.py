@@ -572,22 +572,22 @@ def soft_ncut(image, image_segment, image_weights):
 
     return soft_ncut
 
-def dense_annotation_weight(annotation, sigma_I = 10):
-    image_shape = annotation.get_shape()
+def dense_global_weight(reference_map, sigma_I = 10):
+    image_shape = reference_map.get_shape()
     weight_size = image_shape[1].value * image_shape[2].value
     batch_size = image_shape[0]
 
-    annotation = tf.cast(annotation, tf.float32)
-    annotation = tf.reshape(annotation, shape=(-1, weight_size)) # [B, W*H]
-    annotation = tf.transpose(annotation, [1,0]) # [W*H,B]
+    reference_map = tf.cast(reference_map, tf.float32)
+    reference_map = tf.reshape(reference_map, shape=(-1, weight_size)) # [B, W*H]
+    reference_map = tf.transpose(reference_map, [1,0]) # [W*H,B]
 
     j, i = tf.meshgrid(tf.range(weight_size), tf.range(weight_size)) # [H*W, H*W]
     Fi = tf.gather_nd(annotation, tf.expand_dims(i, axis=-1)) # [H*W, H*W, B]
     Fj = tf.gather_nd(annotation, tf.expand_dims(j, axis=-1)) # [H*W, H*W, B]
-    annotation_weight = tf.exp(-(Fi - Fj)**2 / sigma_I**2) # [H*W, H*W, B]
-    annotation_weight = tf.transpose(annotation_weight, [2, 0, 1]) # [B, H*W, H*W]
+    dense_global_weight = tf.exp(-(Fi - Fj)**2 / sigma_I**2) # [H*W, H*W, B]
+    dense_global_weight = tf.transpose(dense_global_weight, [2, 0, 1]) # [B, H*W, H*W]
 
-    return annotation_weight
+    return dense_global_weight
 
 def dense_brightness_weight(image, sigma_X = 4, sigma_I = 10, r = 5):
     """
@@ -626,7 +626,7 @@ def dense_brightness_weight(image, sigma_X = 4, sigma_I = 10, r = 5):
 
     return bright_weights
 
-def guided_soft_ncut(annotation, image_segment):
+def global_soft_ncut(annotation, image_segment):
     """
     Args:
         annotation: [B, H, W, C]
@@ -640,7 +640,7 @@ def guided_soft_ncut(annotation, image_segment):
     weight_size = image_shape[1].value * image_shape[2].value # H*W
     image_segment = tf.reshape(image_segment, tf.stack([batch_size, num_class, weight_size])) # [B, K, H*W]
 
-    image_weights = dense_annotation_weight(annotation) # [B, H*W, H*W]
+    image_weights = dense_global_weight(annotation) # [B, H*W, H*W]
 
     # Dis-association
     # [B, K, H*W] @ [B, H*W, H*W] batch matmul = [B, K, H*W]
@@ -700,6 +700,40 @@ def dense_soft_ncut(image, image_segment):
 
 import unittest
 if __name__ == '__main__':
+    class TestGlobalWeight(unittest.TestCase):
+        # Global setting
+        NUM_OF_CLASSESS = 4
+        IMAGE_SIZE = 10
+
+        # Tf placeholder
+        image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
+        annotation = tf.placeholder(tf.int32, shape=[None, IMAGE_SIZE, IMAGE_SIZE], name="annotation")
+        kernels = tf.cast(utils.weight_variable([3,3,3,NUM_OF_CLASSESS], name="weight"),tf.float32)
+        bias = tf.cast(utils.bias_variable([NUM_OF_CLASSESS], name="bias"),tf.float32)
+        image_segment = utils.conv2d_basic(image, kernels, bias)
+
+        # tf soft_ncuts
+        soft_ncuts = global_soft_ncut(annotation, image_segment)
+        loss = tf.reduce_sum(soft_ncuts)
+
+        # Optimizer
+        trainable_var = tf.trainable_variables()
+        optimizer = tf.train.AdamOptimizer(1e-4)
+        grads = optimizer.compute_gradients(loss, var_list=trainable_var)
+        trainer = optimizer.apply_gradients(grads)
+
+        sess = tf.Session()
+        sess.run(tf.global_variables_initializer())
+
+        # Data
+        x = np.arange(IMAGE_SIZE*IMAGE_SIZE).reshape(IMAGE_SIZE,IMAGE_SIZE)
+        x = np.moveaxis(np.tile(x, [3, 1, 1]), [0, 1, 2], [2, 0, 1])
+        x = x[np.newaxis,:,:,:]
+
+        def test_global_soft_ncut(self):
+            # TODO: implement unit testing for guided soft ncut
+            pass
+
     class TestBrightWeight(unittest.TestCase):
 
         # Global setting
