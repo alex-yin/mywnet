@@ -8,16 +8,17 @@ import sys, os
 import TensorflowUtils as utils
 from WNet_naive import Wnet_naive
 from soft_ncut import global_soft_ncut
+from soft_n_cut_loss import soft_n_cut_loss
 from data_io.BatchDatsetReader_VOC import create_BatchDatset
 
 
 def tf_flags():
     FLAGS = tf.flags.FLAGS
-    tf.flags.DEFINE_integer("batch_size", "5", "batch size for training")
+    tf.flags.DEFINE_integer("batch_size", "8", "batch size for training")
     tf.flags.DEFINE_integer("image_size", "96", "image size for training")
     tf.flags.DEFINE_integer('max_iteration', "50000", "max iterations")
     tf.flags.DEFINE_integer('decay_steps', "5000", "number of iterations for learning rate decay")
-    tf.flags.DEFINE_integer('num_class', "5", "number of classes for segmentation")
+    tf.flags.DEFINE_integer('num_class', "3", "number of classes for segmentation")
     tf.flags.DEFINE_integer('num_layers', "5", "number of layers of UNet")
     tf.flags.DEFINE_string("cmap", "viridis", "color map for segmentation")
     tf.flags.DEFINE_string("logs_dir", "WNet_guided_logs/", "path to logs directory")
@@ -26,6 +27,7 @@ def tf_flags():
     tf.flags.DEFINE_float("dropout_rate", "0.65", "dropout rate")
     tf.flags.DEFINE_bool('debug', "False", "Debug mode: True/ False")
     tf.flags.DEFINE_string('mode', "train", "Mode train/ test/ visualize")
+    tf.flags.DEFINE_bool('soft_ncut', "False", "")
     return FLAGS
 
 
@@ -42,6 +44,7 @@ class Wnet_ice(Wnet_naive):
         """
 
         self.flags = flags
+        self.use_soft_ncut = self.flags.soft_ncut
         image_size = int(self.flags.image_size)
         num_class = int(self.flags.num_class)
 
@@ -61,10 +64,15 @@ class Wnet_ice(Wnet_naive):
                                     self.pred_annotation, 0, num_class, self.flags.cmap)
         self.reconstruct_loss = tf.reduce_mean(tf.reshape(
                                     ((self.ice - self.reconstruct_ice)/255)**2, shape=[-1]))
-        # TODO: USE ICE ACTUALLY so that it's unsupervised
-        batch_soft_ncut = global_soft_ncut(self.annotation, image_segment)
-        self.soft_ncut = tf.reduce_mean(batch_soft_ncut)
-        self.loss = self.reconstruct_loss + self.soft_ncut
+        if self.use_soft_ncut:
+            # TODO: USE ICE ACTUALLY so that it's unsupervised
+            # batch_soft_ncut = global_soft_ncut(self.annotation, image_segment)
+            batch_soft_ncut = soft_n_cut_loss(self.annotation, image_segment, \
+                    num_class, self.flags.image_size, self.flags.image_size)
+            self.soft_ncut = tf.reduce_mean(batch_soft_ncut)
+            self.loss = self.reconstruct_loss + self.soft_ncut
+        else:
+            self.loss = self.reconstruct_loss
 
         # Train var and op
         trainable_var = tf.trainable_variables()
@@ -74,10 +82,13 @@ class Wnet_ice(Wnet_naive):
                 utils.add_to_regularization_and_summary(var)
         self.reconst_learning_rate, self.train_reconst_op = \
             self.train(self.reconstruct_loss, trainable_var, self.flags)
-        self.softNcut_learning_rate, self.train_softNcut_op = \
-            self.train(self.soft_ncut, encode_trainable_var, self.flags)
+        if self.use_soft_ncut:
+            self.softNcut_learning_rate, self.train_softNcut_op = \
+                self.train(self.soft_ncut, encode_trainable_var, self.flags)
+
         self.reconst_learning_rate_summary = tf.summary.scalar("reconst_learning_rate", self.reconst_learning_rate)
-        self.softNcut_learning_rate_summary = tf.summary.scalar("softNcut_learning_rate", self.softNcut_learning_rate)
+        if self.use_soft_ncut:
+            self.softNcut_learning_rate_summary = tf.summary.scalar("softNcut_learning_rate", self.softNcut_learning_rate)
 
         # Summary
         tf.summary.image("input_vis", self.vis, max_outputs=2)
@@ -85,9 +96,13 @@ class Wnet_ice(Wnet_naive):
         tf.summary.image("reconstruct_ice", self.reconstruct_ice, max_outputs=2)
         tf.summary.image("pred_annotation", self.colorized_pred_annotation, max_outputs=2)
         reconstLoss_summary = tf.summary.scalar("reconstruct_loss", self.reconstruct_loss)
-        softNcutLoss_summary = tf.summary.scalar("soft_ncut_loss", self.soft_ncut)
-        totLoss_summary = tf.summary.scalar("total_loss", self.loss)
-        self.loss_summary = tf.summary.merge([reconstLoss_summary, softNcutLoss_summary, totLoss_summary])
+        if self.use_soft_ncut:
+            softNcutLoss_summary = tf.summary.scalar("soft_ncut_loss", self.soft_ncut)
+            totLoss_summary = tf.summary.scalar("total_loss", self.loss)
+            self.loss_summary = tf.summary.merge([reconstLoss_summary, softNcutLoss_summary, totLoss_summary])
+        else:
+            self.loss_summary =reconstLoss_summary
+
         self.summary_op = tf.summary.merge_all()
 
         # Session ,saver, and writer
@@ -113,14 +128,16 @@ class Wnet_ice(Wnet_naive):
         weight_shapes = np.prod(image_shape).astype(np.int64)
 
         reconst_lr = self.sess.run(self.reconst_learning_rate)
-        softNcut_lr = self.sess.run(self.softNcut_learning_rate)
+        if self.use_soft_ncut:
+            softNcut_lr = self.sess.run(self.softNcut_learning_rate)
 
         for itr in range(self.flags.max_iteration):
             if itr != 0 and itr % self.flags.decay_steps == 0:
                 reconst_lr *= self.flags.decay_rate
-                softNcut_lr *= self.flags.decay_rate
                 self.sess.run(tf.assign(self.reconst_learning_rate, reconst_lr))
-                self.sess.run(tf.assign(self.softNcut_learning_rate, softNcut_lr))
+                if self.use_soft_ncut:
+                    softNcut_lr *= self.flags.decay_rate
+                    self.sess.run(tf.assign(self.softNcut_learning_rate, softNcut_lr))
 
             train_images, train_annotations = train_dataset_reader.next_batch(self.flags.batch_size)
             feed_dict = {self.image: train_images,
@@ -130,7 +147,8 @@ class Wnet_ice(Wnet_naive):
             valid_feed_dict = dict(feed_dict)
 
             self.sess.run(self.train_reconst_op, feed_dict=feed_dict)
-            self.sess.run(self.train_softNcut_op, feed_dict=feed_dict)
+            if self.use_soft_ncut:
+                self.sess.run(self.train_softNcut_op, feed_dict=feed_dict)
 
             if itr % 10 == 0:
                 train_loss = self.sess.run(self.loss, feed_dict=feed_dict)
