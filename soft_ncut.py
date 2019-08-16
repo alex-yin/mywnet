@@ -321,40 +321,6 @@ def gaussian_neighbor(image_shape, sigma_X = 4, r = 5):
     vals = np.hstack(val_lst).astype(np.float)
     return indeces, vals
 
-def annotation_weight(annotation, neighbor_filter, sigma_I = 5):
-    """
-    Calculate likelihood of pixels in image by their metric in brightness.
-
-    Args:
-        annotation: tensor [B, H, W]
-        neighbor_filter: is tensor list: [rows, cols, vals].
-                        where rows, and cols are pixel in image,
-                        val is their likelihood in distance.
-        sigma_I: sigma for metric of intensity.
-    returns:
-        SparseTensor properties:\
-            indeces: [N, ndims]
-            annotation_weight: [N, batch_size]
-            dense_shape
-    """
-
-    indeces, vals, dense_shape = neighbor_filter
-    rows = indeces[:,0]
-    cols = indeces[:,1]
-    image_shape = annotation.get_shape()
-    weight_size = image_shape[1].value * image_shape[2].value
-
-    annotation = tf.cast(annotation, tf.float32)
-    annotation = tf.reshape(annotation, shape=(-1, weight_size)) # [B, W*H]
-    annotation = tf.transpose(annotation, [1,0]) # [W*H,B]
-
-    Fi = tf.transpose(tf.nn.embedding_lookup(annotation, rows),[1,0]) # [B, #elements]
-    Fj = tf.transpose(tf.nn.embedding_lookup(annotation, cols),[1,0]) # [B, #elements]
-    annotation_weight = tf.exp(-(Fi - Fj)**2 / sigma_I**2) * vals
-    annotation_weight = tf.transpose(annotation_weight, [1,0]) # [#elements, B]
-
-    return indeces, annotation_weight, dense_shape
-
 def brightness_weight(image, neighbor_filter, sigma_I = 0.05):
     """
     Calculate likelihood of pixels in image by their metric in brightness.
@@ -577,15 +543,41 @@ def dense_global_weight(reference_map, sigma_I = 10):
     weight_size = image_shape[1].value * image_shape[2].value
     batch_size = image_shape[0]
 
-    reference_map = tf.cast(reference_map, tf.float32)
     reference_map = tf.reshape(reference_map, shape=(-1, weight_size)) # [B, W*H]
     reference_map = tf.transpose(reference_map, [1,0]) # [W*H,B]
 
     j, i = tf.meshgrid(tf.range(weight_size), tf.range(weight_size)) # [H*W, H*W]
-    Fi = tf.gather_nd(annotation, tf.expand_dims(i, axis=-1)) # [H*W, H*W, B]
-    Fj = tf.gather_nd(annotation, tf.expand_dims(j, axis=-1)) # [H*W, H*W, B]
+    Fi = tf.gather_nd(reference_map, tf.expand_dims(i, axis=-1)) # [H*W, H*W, B]
+    Fj = tf.gather_nd(reference_map, tf.expand_dims(j, axis=-1)) # [H*W, H*W, B]
     dense_global_weight = tf.exp(-(Fi - Fj)**2 / sigma_I**2) # [H*W, H*W, B]
     dense_global_weight = tf.transpose(dense_global_weight, [2, 0, 1]) # [B, H*W, H*W]
+
+    return dense_global_weight
+
+def np_dense_global_weight(reference_map, sigma_I = 10):
+    """
+    Calculate bright_weight(connection) for image
+
+    Args:
+        reference_map: ndarray [B,H,W].
+        sigma_I: sigma for metric of intensity.
+    Returns:
+        dense_global_weight: ndarray [B, W*H, W*H]
+    """
+
+    weight_size = np.prod(reference_map.shape[1:3])
+    batch_size = reference_map.shape[0]
+    dense_global_weight = np.zeros((batch_size,weight_size,weight_size))
+
+    for batch in range(batch_size):
+        # Reduce channel
+        flat_image = np.ravel(reference_map[batch])
+
+        Fj, Fi = np.meshgrid(flat_image, flat_image)
+        F_metric = Fi - Fj
+
+        global_weight = np.exp(-(F_metric**2 / sigma_I**2))
+        dense_global_weight[batch] = global_weight
 
     return dense_global_weight
 
@@ -626,34 +618,31 @@ def dense_brightness_weight(image, sigma_X = 4, sigma_I = 10, r = 5):
 
     return bright_weights
 
-def global_soft_ncut(annotation, image_segment):
+def global_soft_ncut(reference_map, image_segment):
     """
     Args:
-        annotation: [B, H, W, C]
+        reference_map: [B, H, W]
         image_segment: [B, H, W, K]
     Returns:
         Soft_Ncut: scalar
     """
-    batch_size = tf.shape(annotation)[0] # B
+    batch_size = tf.shape(reference_map)[0] # B
     num_class = image_segment.get_shape()[-1].value # K
-    image_shape = annotation.get_shape()
+    image_shape = reference_map.get_shape()
     weight_size = image_shape[1].value * image_shape[2].value # H*W
     image_segment = tf.reshape(image_segment, tf.stack([batch_size, num_class, weight_size])) # [B, K, H*W]
 
-    image_weights = dense_global_weight(annotation) # [B, H*W, H*W]
+    image_weights = dense_global_weight(reference_map) # [B, H*W, H*W]
 
     # Dis-association
     # [B, K, H*W] @ [B, H*W, H*W] batch matmul = [B, K, H*W]
     W_Ak = tf.einsum('aij,ajk->aik', image_segment, image_weights) # [B, K, H*W]
-    # [B, K, H*W] @ [B, K, H*W] dot product on [[2],[2]]  = [B, K]
     dis_assoc = tf.einsum('ijk,ijk->ij', W_Ak, image_segment) # [B, K]
     dis_assoc = tf.identity(dis_assoc, name="dis_assoc")
 
     # Association
     sum_W = tf.reduce_sum(image_weights, axis=2) # [B, H*W]
-    # broadcast [B, H*W] => [B, K, H*W]
-    sum_W = tf.stack([sum_W] * num_class, axis=1)
-    assoc = tf.tensordot(image_segment, sum_W, axes=[2,2]) # [B, K]
+    assoc = tf.einsum('ijk,ik->ij', image_segment, sum_W)
     assoc = tf.identity(assoc, name="assoc")
 
     utils.add_activation_summary(dis_assoc)
@@ -663,6 +652,38 @@ def global_soft_ncut(annotation, image_segment):
     eps = 1e-6
     soft_ncut = tf.cast(num_class, tf.float32) - \
                 tf.reduce_sum((dis_assoc + eps) / (assoc + eps), axis=1)
+    return soft_ncut
+
+def np_global_soft_ncut(reference_map, image_segment):
+    """
+    Soft normalized cut for dense image and image_segment.
+
+    Args:
+        image: ndarray [B, H,W, C]
+        image_segment: ndarray [B, H, W, K]
+    Returns:
+        soft_ncut: scalar
+    """
+
+    batch_num = reference_map.shape[0]
+    num_class = image_segment.shape[-1]
+    weight_size = reference_map.shape[1] * reference_map.shape[2]
+    image_segment = np.transpose(image_segment, [0, 3, 1, 2]) # [B, K, H, W]
+    image_segment = np.reshape(image_segment, [batch_num, num_class, weight_size]) # [B, K, H*W]
+
+    image_weights = np_dense_global_weight(reference_map)
+    sum_image_weights = np.sum(image_weights,axis=-1)
+
+    dis_assoc = np.zeros((batch_num,num_class))
+    assoc = np.zeros((batch_num,num_class))
+    for batch in range(batch_num):
+        W_Ak = np.matmul(image_segment[batch], image_weights[batch]) # [K, H*W]
+        dis_assoc[batch] = np.einsum('ij,ij->i', W_Ak, image_segment[batch]) # [K]
+        # dissoc = np.matmul(W_Ak, image_segment[batch].T) # [K, K]
+        # dis_assoc[batch] = np.diag(dissoc) # [K]
+        assoc[batch] = np.matmul(image_segment[batch], sum_image_weights[batch]) # [K]
+    eps = 0
+    soft_ncut = num_class - np.sum((dis_assoc + eps) / (assoc + eps), axis=1)
     return soft_ncut
 
 def dense_soft_ncut(image, image_segment):
@@ -702,129 +723,143 @@ import unittest
 if __name__ == '__main__':
     class TestGlobalWeight(unittest.TestCase):
         # Global setting
-        NUM_OF_CLASSESS = 4
+        NUM_OF_CLASSESS = 2
         IMAGE_SIZE = 10
 
         # Tf placeholder
-        image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
-        annotation = tf.placeholder(tf.int32, shape=[None, IMAGE_SIZE, IMAGE_SIZE], name="annotation")
-        kernels = tf.cast(utils.weight_variable([3,3,3,NUM_OF_CLASSESS], name="weight"),tf.float32)
-        bias = tf.cast(utils.bias_variable([NUM_OF_CLASSESS], name="bias"),tf.float32)
-        image_segment = utils.conv2d_basic(image, kernels, bias)
+        # image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
+        annotation = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE], name="annotation")
+        image_segment = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, NUM_OF_CLASSESS], name="image_segment")
 
+        global_weights = dense_global_weight(annotation)
         # tf soft_ncuts
-        soft_ncuts = global_soft_ncut(annotation, image_segment)
-        loss = tf.reduce_sum(soft_ncuts)
+        soft_ncut = global_soft_ncut(annotation, image_segment)
+        # loss = tf.reduce_sum(soft_ncuts)
 
         # Optimizer
-        trainable_var = tf.trainable_variables()
-        optimizer = tf.train.AdamOptimizer(1e-4)
-        grads = optimizer.compute_gradients(loss, var_list=trainable_var)
-        trainer = optimizer.apply_gradients(grads)
+        # trainable_var = tf.trainable_variables()
+        # optimizer = tf.train.AdamOptimizer(1e-4)
+        # grads = optimizer.compute_gradients(loss, var_list=trainable_var)
+        # trainer = optimizer.apply_gradients(grads)
 
         sess = tf.Session()
         sess.run(tf.global_variables_initializer())
 
         # Data
-        x = np.arange(IMAGE_SIZE*IMAGE_SIZE).reshape(IMAGE_SIZE,IMAGE_SIZE)
-        x = np.moveaxis(np.tile(x, [3, 1, 1]), [0, 1, 2], [2, 0, 1])
-        x = x[np.newaxis,:,:,:]
+        anno = np.random.randn(10, IMAGE_SIZE, IMAGE_SIZE)
+        # anno = np.ones([10, IMAGE_SIZE, IMAGE_SIZE])
+
+        # img_seg = np.random.randn(10, IMAGE_SIZE, IMAGE_SIZE, NUM_OF_CLASSESS)
+        img_seg = np.arange(10*IMAGE_SIZE*IMAGE_SIZE*NUM_OF_CLASSESS).reshape([10, IMAGE_SIZE, IMAGE_SIZE, NUM_OF_CLASSESS])
+
+        def test_global_weights(self):
+            tf_global_weights = self.sess.run(self.global_weights, feed_dict={self.annotation: self.anno})
+            np_global_weights = np_dense_global_weight(self.anno)
+            np.testing.assert_allclose(tf_global_weights, np_global_weights, rtol=1e-4, atol=1e-4)
 
         def test_global_soft_ncut(self):
-            # TODO: implement unit testing for guided soft ncut
-            pass
-
-    class TestBrightWeight(unittest.TestCase):
-
-        # Global setting
-        NUM_OF_CLASSESS = 4
-        IMAGE_SIZE = 10
-
-        # Tf placeholder
-        image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
-        kernels = tf.cast(utils.weight_variable([3,3,3,NUM_OF_CLASSESS], name="weight"),tf.float32)
-        bias = tf.cast(utils.bias_variable([NUM_OF_CLASSESS], name="bias"),tf.float32)
-        image_segment = utils.conv2d_basic(image, kernels, bias)
-
-        neighbor_indeces = tf.placeholder(tf.int64, name="neighbor_indeces")
-        neighbor_vals = tf.placeholder(tf.float32, name="neighbor_vals")
-        neighbor_shape = tf.placeholder(tf.int64, name="neighbor_shape")
-        neighbor_filter = (neighbor_indeces, neighbor_vals, neighbor_shape)
-        _image_weights = brightness_weight(image, neighbor_filter, sigma_I = 10)
-        image_weights = convert_to_batchTensor(*_image_weights)
-        dense_image_weights = tf.sparse_to_dense(
-            image_weights.indices,
-            image_weights.dense_shape,
-            image_weights.values)
-
-        soft_ncuts = soft_ncut(image, image_segment, image_weights)
-        loss = tf.reduce_sum(soft_ncuts)
-
-        # Optimizer
-        trainable_var = tf.trainable_variables()
-        optimizer = tf.train.AdamOptimizer(1e-4)
-        grads = optimizer.compute_gradients(loss, var_list=trainable_var)
-        trainer = optimizer.apply_gradients(grads)
-
-        sess = tf.Session()
-        sess.run(tf.global_variables_initializer())
-
-        # Data
-        x = np.arange(IMAGE_SIZE*IMAGE_SIZE).reshape(IMAGE_SIZE,IMAGE_SIZE)
-        x = np.moveaxis(np.tile(x, [3, 1, 1]), [0, 1, 2], [2, 0, 1])
-        x = x[np.newaxis,:,:,:]
-
-        def test_image_weight(self):
-            """
-            """
-            image_shape = self.image.get_shape().as_list()[1:3]
-            gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
-            weight_shapes = np.prod(image_shape)
-            sparse_bright_weight = self.sess.run(self.dense_image_weights,
+            tf_soft_ncut = self.sess.run(self.soft_ncut,
                     feed_dict={
-                        self.image: self.x,
-                        self.neighbor_indeces: gauss_indeces,
-                        self.neighbor_vals: gauss_vals,
-                        self.neighbor_shape: [weight_shapes, weight_shapes]
+                        self.annotation: self.anno,
+                        self.image_segment: self.img_seg
                     })
 
-            # Compare with dense version
-            dense_bright_weight = dense_brightness_weight(self.x)
-            max_err = np.max(np.abs(sparse_bright_weight - dense_bright_weight))
-            print('max error of image_weights = %.4e'%max_err)
-            np.testing.assert_allclose(sparse_bright_weight, dense_bright_weight, rtol=1e-6, atol=1e-6)
+            np_soft_ncut= np_global_soft_ncut(self.anno, self.img_seg)
+            max_err = np.max(np.abs(tf_soft_ncut - np_soft_ncut))
+            print(np_soft_ncut)
+            np.testing.assert_allclose(tf_soft_ncut, np_soft_ncut, rtol=1e-6, atol=1e-6)
 
-        def test_soft_ncut(self):
-            """
-            """
-            image_shape = self.image.get_shape().as_list()[1:3]
-            gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
-            weight_shapes = np.prod(image_shape)
-            sp_soft_ncut, image_segment = self.sess.run(
-                    [self.soft_ncuts, self.image_segment],
-                    feed_dict={
-                        self.image: self.x,
-                        self.neighbor_indeces: gauss_indeces,
-                        self.neighbor_vals: gauss_vals,
-                        self.neighbor_shape: [weight_shapes, weight_shapes]
-                    })
+    # class TestBrightWeight(unittest.TestCase):
 
-            # Compare with dense version
-            dn_soft_ncut = dense_soft_ncut(self.x, image_segment)
-            max_err = np.max(np.abs(sp_soft_ncut - dn_soft_ncut))
-            print('max error of %s = %.4e'%('soft_ncut', max_err))
-            np.testing.assert_allclose(sp_soft_ncut, dn_soft_ncut, rtol=1e-4, atol=1e-6)
+    #     # Global setting
+    #     NUM_OF_CLASSESS = 4
+    #     IMAGE_SIZE = 10
 
-        def test_train(self):
-            image_shape = self.image.get_shape().as_list()[1:3]
-            gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
-            weight_shapes = np.prod(image_shape)
-            result, _ = self.sess.run([self.soft_ncuts, self.trainer],
-                    feed_dict={
-                        self.image: self.x,
-                        self.neighbor_indeces: gauss_indeces,
-                        self.neighbor_vals: gauss_vals,
-                        self.neighbor_shape: [weight_shapes, weight_shapes]
-                    })
+    #     # Tf placeholder
+    #     image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
+    #     kernels = tf.cast(utils.weight_variable([3,3,3,NUM_OF_CLASSESS], name="weight"),tf.float32)
+    #     bias = tf.cast(utils.bias_variable([NUM_OF_CLASSESS], name="bias"),tf.float32)
+    #     image_segment = utils.conv2d_basic(image, kernels, bias)
+
+    #     neighbor_indeces = tf.placeholder(tf.int64, name="neighbor_indeces")
+    #     neighbor_vals = tf.placeholder(tf.float32, name="neighbor_vals")
+    #     neighbor_shape = tf.placeholder(tf.int64, name="neighbor_shape")
+    #     neighbor_filter = (neighbor_indeces, neighbor_vals, neighbor_shape)
+    #     _image_weights = brightness_weight(image, neighbor_filter, sigma_I = 10)
+    #     image_weights = convert_to_batchTensor(*_image_weights)
+    #     dense_image_weights = tf.sparse_to_dense(
+    #         image_weights.indices,
+    #         image_weights.dense_shape,
+    #         image_weights.values)
+
+    #     soft_ncuts = soft_ncut(image, image_segment, image_weights)
+    #     loss = tf.reduce_sum(soft_ncuts)
+
+    #     # Optimizer
+    #     trainable_var = tf.trainable_variables()
+    #     optimizer = tf.train.AdamOptimizer(1e-4)
+    #     grads = optimizer.compute_gradients(loss, var_list=trainable_var)
+    #     trainer = optimizer.apply_gradients(grads)
+
+    #     sess = tf.Session()
+    #     sess.run(tf.global_variables_initializer())
+
+    #     # Data
+    #     x = np.arange(IMAGE_SIZE*IMAGE_SIZE).reshape(IMAGE_SIZE,IMAGE_SIZE)
+    #     x = np.moveaxis(np.tile(x, [3, 1, 1]), [0, 1, 2], [2, 0, 1])
+    #     x = x[np.newaxis,:,:,:]
+
+    #     def test_image_weight(self):
+    #         """
+    #         """
+    #         image_shape = self.image.get_shape().as_list()[1:3]
+    #         gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
+    #         weight_shapes = np.prod(image_shape)
+    #         sparse_bright_weight = self.sess.run(self.dense_image_weights,
+    #                 feed_dict={
+    #                     self.image: self.x,
+    #                     self.neighbor_indeces: gauss_indeces,
+    #                     self.neighbor_vals: gauss_vals,
+    #                     self.neighbor_shape: [weight_shapes, weight_shapes]
+    #                 })
+
+    #         # Compare with dense version
+    #         dense_bright_weight = dense_brightness_weight(self.x)
+    #         max_err = np.max(np.abs(sparse_bright_weight - dense_bright_weight))
+    #         print('max error of image_weights = %.4e'%max_err)
+    #         np.testing.assert_allclose(sparse_bright_weight, dense_bright_weight, rtol=1e-6, atol=1e-6)
+
+    #     def test_soft_ncut(self):
+    #         """
+    #         """
+    #         image_shape = self.image.get_shape().as_list()[1:3]
+    #         gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
+    #         weight_shapes = np.prod(image_shape)
+    #         sp_soft_ncut, image_segment = self.sess.run(
+    #                 [self.soft_ncuts, self.image_segment],
+    #                 feed_dict={
+    #                     self.image: self.x,
+    #                     self.neighbor_indeces: gauss_indeces,
+    #                     self.neighbor_vals: gauss_vals,
+    #                     self.neighbor_shape: [weight_shapes, weight_shapes]
+    #                 })
+
+    #         # Compare with dense version
+    #         dn_soft_ncut = dense_soft_ncut(self.x, image_segment)
+    #         max_err = np.max(np.abs(sp_soft_ncut - dn_soft_ncut))
+    #         print('max error of %s = %.4e'%('soft_ncut', max_err))
+    #         np.testing.assert_allclose(sp_soft_ncut, dn_soft_ncut, rtol=1e-4, atol=1e-6)
+
+    #     def test_train(self):
+    #         image_shape = self.image.get_shape().as_list()[1:3]
+    #         gauss_indeces, gauss_vals = gaussian_neighbor(image_shape, sigma_X = 4, r = 5)
+    #         weight_shapes = np.prod(image_shape)
+    #         result, _ = self.sess.run([self.soft_ncuts, self.trainer],
+    #                 feed_dict={
+    #                     self.image: self.x,
+    #                     self.neighbor_indeces: gauss_indeces,
+    #                     self.neighbor_vals: gauss_vals,
+    #                     self.neighbor_shape: [weight_shapes, weight_shapes]
+    #                 })
 
     unittest.main()

@@ -15,9 +15,9 @@ import tarfile, zipfile
 
 
 def create_image_lists(data_dir,
-                       image_dir='JPEGImages',
-                       annotation_dir='SegmentationClass',
-                       ftype='jpg'):
+                       image_dir,
+                       annotation_dir,
+                       ftype):
     """
     Read 'data_dir/image_dir/*.ftype' and 'data_dir/annotation_dir/*.ftype'
     into list of dict with keys: 'image', 'annotation', 'filename'
@@ -47,14 +47,19 @@ def create_image_lists(data_dir,
     print ('Nunmber of files: %d' %len(data))
     return data
 
-def read_data_record(data_dir, validation_len = 10, test_len = 500):
+def read_data_record(data_dir,
+                     image_dir,
+                     annotation_dir,
+                     ftype,
+                     validation_len = 10,
+                     test_len = 500):
     """
     Initialize list of datapath in data_dir if has not been initialized.
     """
     pickle_filename = 'VOC_datalist.pickle'
     pickle_filepath = os.path.join(data_dir, pickle_filename)
     if not os.path.exists(pickle_filepath):
-        data = create_image_lists(data_dir)
+        data = create_image_lists(data_dir, image_dir, annotation_dir, ftype)
         # Parse data into training and validation
         training_data = data[(validation_len + test_len):]
         validation_data = data[:validation_len]
@@ -73,9 +78,12 @@ def read_data_record(data_dir, validation_len = 10, test_len = 500):
         data_records = pickle.load(f)
     return data_records
 
-def create_BatchDatset(data_dir):
+def create_BatchDatset(data_dir,
+                       image_dir='JPEGImages',
+                       annotation_dir='SegmentationClass',
+                       ftype='jpg'):
     print(" create BatchDatset from " + data_dir)
-    data_record = read_data_record(data_dir)
+    data_record = read_data_record(data_dir, image_dir, annotation_dir, ftype)
     train_dataset = BatchDatset(data_record['training'], True)
     valid_dataset = BatchDatset(data_record['validation'], False)
     test_dataset = BatchDatset(data_record['test'], False)

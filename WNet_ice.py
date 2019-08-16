@@ -13,7 +13,7 @@ from data_io.BatchDatsetReader_VOC import create_BatchDatset
 
 def tf_flags():
     FLAGS = tf.flags.FLAGS
-    tf.flags.DEFINE_integer("batch_size", "8", "batch size for training")
+    tf.flags.DEFINE_integer("batch_size", "5", "batch size for training")
     tf.flags.DEFINE_integer("image_size", "96", "image size for training")
     tf.flags.DEFINE_integer('max_iteration', "50000", "max iterations")
     tf.flags.DEFINE_integer('decay_steps', "5000", "number of iterations for learning rate decay")
@@ -29,7 +29,7 @@ def tf_flags():
     return FLAGS
 
 
-class Wnet_guided(Wnet_naive):
+class Wnet_ice(Wnet_naive):
 
     def __init__(self, flags):
         """
@@ -48,7 +48,9 @@ class Wnet_guided(Wnet_naive):
         # Place holder
         self.keep_probability = tf.placeholder(tf.float32, name="keep_probabilty")
         self.image = tf.placeholder(tf.float32, shape=[None, image_size, image_size, 4], name="input_image")
-        self.annotation = tf.placeholder(tf.int32, shape=[None, image_size, image_size], name="annotation")
+        self.vis = self.image[...,0:3]
+        self.ice = tf.expand_dims(self.image[...,3], axis=-1)
+        self.annotation = tf.placeholder(tf.float32, shape=[None, image_size, image_size], name="annotation")
         self.phase_train = tf.placeholder(tf.bool, name='phase_train')
 
         # Prediction and loss
@@ -58,7 +60,7 @@ class Wnet_guided(Wnet_naive):
         self.colorized_pred_annotation = utils.batch_colorize(
                                     self.pred_annotation, 0, num_class, self.flags.cmap)
         self.reconstruct_loss = tf.reduce_mean(tf.reshape(
-                                    ((self.image[...,3] - self.reconstruct_ice)/255)**2, shape=[-1]))
+                                    ((self.ice - self.reconstruct_ice)/255)**2, shape=[-1]))
         # TODO: USE ICE ACTUALLY so that it's unsupervised
         batch_soft_ncut = global_soft_ncut(self.annotation, image_segment)
         self.soft_ncut = tf.reduce_mean(batch_soft_ncut)
@@ -78,8 +80,8 @@ class Wnet_guided(Wnet_naive):
         self.softNcut_learning_rate_summary = tf.summary.scalar("softNcut_learning_rate", self.softNcut_learning_rate)
 
         # Summary
-        tf.summary.image("input_vis", self.image[...,0:3], max_outputs=2)
-        tf.summary.image("input_ice", self.image[...,3], max_outputs=2)
+        tf.summary.image("input_vis", self.vis, max_outputs=2)
+        tf.summary.image("input_ice", self.ice, max_outputs=2)
         tf.summary.image("reconstruct_ice", self.reconstruct_ice, max_outputs=2)
         tf.summary.image("pred_annotation", self.colorized_pred_annotation, max_outputs=2)
         reconstLoss_summary = tf.summary.scalar("reconstruct_loss", self.reconstruct_loss)
@@ -190,7 +192,7 @@ if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
     flags = tf_flags()
-    net = Wnet_guided(flags)
+    net = Wnet_ice(flags)
 
     print("Setting up dataset reader")
     train_dataset_reader, validation_dataset_reader, test_dataset_reader = \

@@ -8,16 +8,17 @@ import sys, os
 import TensorflowUtils as utils
 from WNet_naive import Wnet_naive
 from soft_ncut import global_soft_ncut
+from soft_n_cut_loss import soft_n_cut_loss
 from data_io.BatchDatsetReader_VOC import create_BatchDatset
 
 
 def tf_flags():
     FLAGS = tf.flags.FLAGS
-    tf.flags.DEFINE_integer("batch_size", "8", "batch size for training")
+    tf.flags.DEFINE_integer("batch_size", "3", "batch size for training")
     tf.flags.DEFINE_integer("image_size", "96", "image size for training")
     tf.flags.DEFINE_integer('max_iteration', "50000", "max iterations")
     tf.flags.DEFINE_integer('decay_steps', "5000", "number of iterations for learning rate decay")
-    tf.flags.DEFINE_integer('num_class', "5", "number of classes for segmentation")
+    tf.flags.DEFINE_integer('num_class', "3", "number of classes for segmentation")
     tf.flags.DEFINE_integer('num_layers', "5", "number of layers of UNet")
     tf.flags.DEFINE_string("cmap", "viridis", "color map for segmentation")
     tf.flags.DEFINE_string("logs_dir", "WNet_guided_logs/", "path to logs directory")
@@ -48,7 +49,7 @@ class Wnet_guided(Wnet_naive):
         # Place holder
         self.keep_probability = tf.placeholder(tf.float32, name="keep_probabilty")
         self.image = tf.placeholder(tf.float32, shape=[None, image_size, image_size, 3], name="input_image")
-        self.annotation = tf.placeholder(tf.int32, shape=[None, image_size, image_size], name="annotation")
+        self.annotation = tf.placeholder(tf.float32, shape=[None, image_size, image_size], name="annotation")
         self.phase_train = tf.placeholder(tf.bool, name='phase_train')
 
         # Prediction and loss
@@ -59,7 +60,9 @@ class Wnet_guided(Wnet_naive):
                                     self.pred_annotation, 0, num_class, self.flags.cmap)
         self.reconstruct_loss = tf.reduce_mean(tf.reshape(
                                     ((self.image - self.reconstruct_image)/255)**2, shape=[-1]))
-        batch_soft_ncut = global_soft_ncut(self.annotation, image_segment)
+        # batch_soft_ncut = global_soft_ncut(self.annotation, image_segment)
+        batch_soft_ncut = soft_n_cut_loss(self.annotation, image_segment, \
+                num_class, self.flags.image_size, self.flags.image_size)
         self.soft_ncut = tf.reduce_mean(batch_soft_ncut)
         self.loss = self.reconstruct_loss + self.soft_ncut
 
@@ -88,7 +91,9 @@ class Wnet_guided(Wnet_naive):
 
         # Session ,saver, and writer
         print("Setting up Session and Saver...")
-        self.sess = tf.Session()
+        cfg = tf.ConfigProto(allow_soft_placement=True)
+        cfg.gpu_options.allow_growth = True
+        self.sess = tf.Session(config=cfg)
         self.saver = tf.train.Saver(max_to_keep=2)
         # create two summary writers to show training loss and validation loss in the same graph
         # need to create two folders 'train' and 'validation' inside FLAGS.logs_dir
